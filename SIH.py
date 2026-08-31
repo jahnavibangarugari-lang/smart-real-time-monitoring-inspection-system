@@ -233,6 +233,38 @@ def init_db():
         FOREIGN KEY(user_id) REFERENCES users(id),
         FOREIGN KEY(project_id) REFERENCES projects(id)
     );
+
+    CREATE TABLE IF NOT EXISTS beneficiary_requests(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        beneficiary_id INTEGER NOT NULL,
+        project_id INTEGER,
+        request_type TEXT NOT NULL,
+        description TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'Submitted',
+        FOREIGN KEY(beneficiary_id) REFERENCES users(id),
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS beneficiary_feedback(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        beneficiary_id INTEGER NOT NULL,
+        project_id INTEGER,
+        rating INTEGER NOT NULL,
+        comments TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(beneficiary_id) REFERENCES users(id),
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS beneficiary_updates(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        project_id INTEGER,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
     """)
 
     defaults = [
@@ -253,6 +285,10 @@ def init_db():
             "INSERT INTO projects(name,project_type,location,contact_name,created_at) VALUES(?,?,?,?,?)",
             ("Demo Social Welfare Institute", "DoSJE Scheme", "Raipur District", "Project Incharge", now()),
         )
+
+    if conn.execute("SELECT COUNT(*) FROM beneficiary_updates").fetchone()[0] == 0:
+        conn.execute("INSERT INTO beneficiary_updates(title,message,project_id,created_at) VALUES(?,?,?,?)", ("Welcome to SIMMS", "Beneficiaries can report problems, submit service requests, track request status and provide feedback.", None, now()))
+        conn.execute("INSERT INTO beneficiary_updates(title,message,project_id,created_at) VALUES(?,?,?,?)", ("Important Notice", "Please use the beneficiary portal to report genuine project-related problems and service issues.", None, now()))
     conn.commit()
     conn.close()
 
@@ -630,10 +666,108 @@ def beneficiary():
         return "Access denied", 403
     conn = db()
     projects_rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
+    requests_rows = conn.execute("SELECT br.*, p.name project_name FROM beneficiary_requests br LEFT JOIN projects p ON br.project_id=p.id WHERE br.beneficiary_id=? ORDER BY br.id DESC", (session["user_id"],)).fetchall()
+    updates_rows = conn.execute("SELECT bu.*, p.name project_name FROM beneficiary_updates bu LEFT JOIN projects p ON bu.project_id=p.id ORDER BY bu.id DESC LIMIT 20").fetchall()
+    feedback_rows = conn.execute("SELECT bf.*, p.name project_name FROM beneficiary_feedback bf LEFT JOIN projects p ON bf.project_id=p.id WHERE bf.beneficiary_id=? ORDER BY bf.id DESC", (session["user_id"],)).fetchall()
+    meetings_rows = conn.execute("SELECT m.*, u.name authority_name FROM meetings m LEFT JOIN users u ON m.created_by=u.id ORDER BY m.id DESC LIMIT 10").fetchall()
     conn.close()
-    rows = "".join(f'<tr><td>{esc(p["name"])}</td><td>{esc(p["project_type"])}</td><td>{esc(p["location"])}</td><td>{esc(p["contact_name"] or "Project Incharge")}</td></tr>' for p in projects_rows)
-    body = f'''<div class="card"><h1>🙋 Beneficiary Workspace</h1><div class="info">This prototype provides a simple beneficiary-side view for project/service information and random VC coordination.</div><h2>Available Projects / Institutes</h2><div class="table-wrap"><table><tr><th>Project</th><th>Scheme</th><th>Location</th><th>Contact</th></tr>{rows or '<tr><td colspan="4" class="empty">No project information available.</td></tr>'}</table></div><a class="btn btn-purple" href="/meetings">🎥 View Available VC Meetings</a></div>'''
+
+    project_rows = "".join(f'<tr><td><b>{esc(p["name"])}</b></td><td>{esc(p["project_type"])}</td><td>📍 {esc(p["location"])}</td><td>{esc(p["contact_name"] or "Project Incharge")}</td></tr>' for p in projects_rows)
+    request_rows = "".join(f'<tr><td>{esc(r["request_type"])}</td><td>{esc(r["project_name"] or "-")}</td><td>{esc(r["description"])}</td><td>{badge(r["status"], "status")}</td><td>{esc(r["created_at"])}</td></tr>' for r in requests_rows) or '<tr><td colspan="5" class="empty">📭 No requests submitted yet.</td></tr>'
+    update_cards = "".join(f'<div class="feature"><div class="feature-icon">🔔</div><h3>{esc(u["title"])}</h3><p>{esc(u["message"])}</p><div class="mini">{esc(u["project_name"] or "General Update")} • {esc(u["created_at"])}</div></div>' for u in updates_rows) or '<div class="empty">🔔 No important updates available.</div>'
+    feedback_table = "".join(f'<tr><td>{esc(f["project_name"] or "-")}</td><td>{"⭐" * int(f["rating"])}</td><td>{esc(f["comments"] or "-")}</td><td>{esc(f["created_at"])}</td></tr>' for f in feedback_rows) or '<tr><td colspan="4" class="empty">No feedback submitted yet.</td></tr>'
+    meeting_rows = "".join(f'<tr><td>{esc(m["title"])}</td><td>{esc(m["authority_name"] or "Authority")}</td><td>{esc(m["created_at"])}</td><td><a class="btn btn-purple" href="{esc(m["meeting_url"])}">🎥 Join</a></td></tr>' for m in meetings_rows) or '<tr><td colspan="4" class="empty">No VC meetings available.</td></tr>'
+
+    body = f'''<div class="card">
+    <div class="section-title"><div><h1>🙋 Beneficiary Workspace</h1><p style="color:#64748b">Welcome, {esc(session["name"])}. Access project services, report problems, track requests and share feedback.</p></div><span class="role">BENEFICIARY</span></div>
+    <div class="info"><b>Beneficiary = Reports problems and receives the project benefit.</b><br>You can view project information, report an issue or problem, check request status, provide feedback and receive important updates.</div>
+    <div class="grid">
+      <div class="feature"><div class="feature-icon">🏢</div><h3>View Project Information</h3><p>View available projects, schemes, locations and contact information.</p><a class="btn" href="#projects">🏢 View Projects</a></div>
+      <div class="feature"><div class="feature-icon">🚨</div><h3>Report an Issue / Problem</h3><p>Report a problem faced while receiving the project service or benefit.</p><a class="btn btn-red" href="/beneficiary/report-issue">🚨 Report Problem</a></div>
+      <div class="feature"><div class="feature-icon">📝</div><h3>Submit a Request</h3><p>Submit a service or beneficiary support request.</p><a class="btn" href="/beneficiary/request">📝 Submit Request</a></div>
+      <div class="feature"><div class="feature-icon">📊</div><h3>Check Request Status</h3><p>Track your submitted request and its current status.</p><a class="btn btn-purple" href="#request-status">📊 Check Status</a></div>
+      <div class="feature"><div class="feature-icon">⭐</div><h3>Provide Feedback</h3><p>Rate the service and provide suggestions to improve project delivery.</p><a class="btn btn-green" href="/beneficiary/feedback">⭐ Give Feedback</a></div>
+      <div class="feature"><div class="feature-icon">🔔</div><h3>Important Updates</h3><p>View important announcements and project-related updates.</p><a class="btn btn-orange" href="#updates">🔔 View Updates</a></div>
+    </div></div>
+    <div class="card" id="projects"><h2>🏢 Project Information</h2><div class="table-wrap"><table><tr><th>Project / Institute</th><th>Scheme</th><th>Location</th><th>Contact</th></tr>{project_rows or '<tr><td colspan="4" class="empty">No project information available.</td></tr>'}</table></div></div>
+    <div class="card" id="request-status"><div class="section-title"><h2>📊 My Requests & Status</h2><a class="btn" href="/beneficiary/request">➕ New Request</a></div><div class="table-wrap"><table><tr><th>Request Type</th><th>Project</th><th>Description</th><th>Status</th><th>Submitted</th></tr>{request_rows}</table></div></div>
+    <div class="card" id="updates"><h2>🔔 Important Updates</h2><div class="grid">{update_cards}</div></div>
+    <div class="card"><h2>⭐ My Feedback</h2><div class="table-wrap"><table><tr><th>Project</th><th>Rating</th><th>Comments</th><th>Date</th></tr>{feedback_table}</table></div></div>
+    <div class="card"><h2>🎥 Available VC Meetings</h2><div class="table-wrap"><table><tr><th>Meeting</th><th>Created By</th><th>Created</th><th>Join</th></tr>{meeting_rows}</table></div></div>'''
     return page(body, "Beneficiary")
+
+
+@app.route("/beneficiary/report-issue", methods=["GET", "POST"])
+def beneficiary_report_issue():
+    if not role_required("Beneficiary"):
+        return "Access denied", 403
+    conn = db()
+    message = ""
+    projects_rows = conn.execute("SELECT id,name,location FROM projects ORDER BY name").fetchall()
+    if request.method == "POST":
+        project_id = request.form.get("project_id", "").strip()
+        issue_type = request.form.get("issue_type", "").strip()
+        description = request.form.get("description", "").strip()
+        latitude = request.form.get("latitude", "").strip()
+        longitude = request.form.get("longitude", "").strip()
+        if not issue_type or not description:
+            message = '<div class="info warning">Please enter the problem type and description.</div>'
+        else:
+            project = conn.execute("SELECT * FROM projects WHERE id=?", (int(project_id),)).fetchone() if project_id.isdigit() else None
+            location = project["location"] if project else "Beneficiary Report"
+            conn.execute("INSERT INTO issues(assignment_id,project_id,location,issue_type,description,created_at,status,priority,photo,reporter_id,latitude,longitude,verified) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)", (None, int(project_id) if project_id.isdigit() else None, location, "Beneficiary: " + issue_type, description, now(), "Reported", "Medium", None, session["user_id"], latitude, longitude))
+            conn.commit()
+            message = '<div class="info success">✅ Your problem has been reported successfully. The monitoring team can review it from the central dashboard.</div>'
+    project_options = '<option value="">-- Select Project / Institute --</option>' + "".join(f'<option value="{p["id"]}">{esc(p["name"])} — {esc(p["location"])}</option>' for p in projects_rows)
+    conn.close()
+    body = f'''<div class="card" style="max-width:850px;margin:auto"><h1>🚨 Report an Issue / Problem</h1><div class="info">If you face a problem while receiving a project benefit or service, report it here. Your report is recorded in the existing monitoring issue system.</div>{message}<form method="POST" class="form-grid"><div class="field"><label>Project / Institute</label><select name="project_id">{project_options}</select></div><div class="field"><label>Problem Type</label><select name="issue_type" required><option value="">-- Select Problem --</option><option>Service Not Received</option><option>Delay in Service</option><option>Facility Problem</option><option>Staff Behaviour</option><option>Infrastructure Problem</option><option>Other</option></select></div><div class="field full"><label>Describe the Problem</label><textarea name="description" placeholder="Explain the problem you are facing..." required></textarea></div><div class="field"><label>Latitude</label><input id="beneficiary_latitude" name="latitude" placeholder="Latitude"></div><div class="field"><label>Longitude</label><input id="beneficiary_longitude" name="longitude" placeholder="Longitude"></div><div class="full"><button type="button" class="btn btn-purple" onclick="getBeneficiaryLocation()">📍 Capture Current Location</button></div><div class="full"><button class="btn btn-red" type="submit">🚨 Submit Problem Report</button> <a class="btn btn-light" href="/beneficiary">← Back</a></div></form></div><script>function getBeneficiaryLocation(){{if(!navigator.geolocation){{alert('Geolocation is not supported by this browser.');return;}}navigator.geolocation.getCurrentPosition(position=>{{document.getElementById('beneficiary_latitude').value=position.coords.latitude;document.getElementById('beneficiary_longitude').value=position.coords.longitude;}},()=>alert('Please allow location permission.'));}}</script>'''
+    return page(body, "Report Problem")
+
+
+@app.route("/beneficiary/request", methods=["GET", "POST"])
+def beneficiary_request():
+    if not role_required("Beneficiary"):
+        return "Access denied", 403
+    conn = db()
+    message = ""
+    projects_rows = conn.execute("SELECT id,name,location FROM projects ORDER BY name").fetchall()
+    if request.method == "POST":
+        project_id = request.form.get("project_id", "").strip()
+        request_type = request.form.get("request_type", "").strip()
+        description = request.form.get("description", "").strip()
+        if not request_type or not description:
+            message = '<div class="info warning">Please select a request type and enter a description.</div>'
+        else:
+            conn.execute("INSERT INTO beneficiary_requests(beneficiary_id,project_id,request_type,description,created_at,status) VALUES(?,?,?,?,?,?)", (session["user_id"], int(project_id) if project_id.isdigit() else None, request_type, description, now(), "Submitted"))
+            conn.commit()
+            message = '<div class="info success">✅ Your service request has been submitted successfully. You can track its status from the Beneficiary Workspace.</div>'
+    project_options = '<option value="">-- Select Project / Institute --</option>' + "".join(f'<option value="{p["id"]}">{esc(p["name"])} — {esc(p["location"])}</option>' for p in projects_rows)
+    conn.close()
+    body = f'''<div class="card" style="max-width:850px;margin:auto"><h1>📝 Submit Service Request</h1><div class="info">Submit a request when you need assistance or a project-related service. After submission, you can track the request status.</div>{message}<form method="POST" class="form-grid"><div class="field"><label>Project / Institute</label><select name="project_id">{project_options}</select></div><div class="field"><label>Request Type</label><select name="request_type" required><option value="">-- Select Request --</option><option>Service Assistance</option><option>Benefit Related Request</option><option>Document Related Request</option><option>Facility Request</option><option>Support Request</option><option>Other</option></select></div><div class="field full"><label>Request Description</label><textarea name="description" placeholder="Describe what assistance or service you need..." required></textarea></div><div class="full"><button class="btn" type="submit">📤 Submit Request</button> <a class="btn btn-light" href="/beneficiary">← Back</a></div></form></div>'''
+    return page(body, "Service Request")
+
+
+@app.route("/beneficiary/feedback", methods=["GET", "POST"])
+def beneficiary_feedback():
+    if not role_required("Beneficiary"):
+        return "Access denied", 403
+    conn = db()
+    message = ""
+    projects_rows = conn.execute("SELECT id,name FROM projects ORDER BY name").fetchall()
+    if request.method == "POST":
+        project_id = request.form.get("project_id", "").strip()
+        rating = request.form.get("rating", "").strip()
+        comments = request.form.get("comments", "").strip()
+        if not rating.isdigit() or int(rating) not in range(1, 6):
+            message = '<div class="info warning">Please select a rating from 1 to 5.</div>'
+        else:
+            conn.execute("INSERT INTO beneficiary_feedback(beneficiary_id,project_id,rating,comments,created_at) VALUES(?,?,?,?,?)", (session["user_id"], int(project_id) if project_id.isdigit() else None, int(rating), comments, now()))
+            conn.commit()
+            message = '<div class="info success">⭐ Thank you! Your feedback has been submitted successfully.</div>'
+    project_options = '<option value="">-- Select Project / Institute --</option>' + "".join(f'<option value="{p["id"]}">{esc(p["name"])}</option>' for p in projects_rows)
+    conn.close()
+    body = f'''<div class="card" style="max-width:800px;margin:auto"><h1>⭐ Provide Feedback</h1><div class="info">Your feedback helps authorities understand the beneficiary experience and improve project service delivery.</div>{message}<form method="POST"><div class="field"><label>Project / Institute</label><select name="project_id">{project_options}</select></div><div class="field" style="margin-top:14px"><label>Service Rating</label><select name="rating" required><option value="">-- Select Rating --</option><option value="5">⭐⭐⭐⭐⭐ Excellent</option><option value="4">⭐⭐⭐⭐ Good</option><option value="3">⭐⭐⭐ Average</option><option value="2">⭐⭐ Poor</option><option value="1">⭐ Very Poor</option></select></div><div class="field" style="margin-top:14px"><label>Comments / Suggestions</label><textarea name="comments" placeholder="Tell us about your experience..."></textarea></div><div style="margin-top:14px"><button class="btn btn-green" type="submit">⭐ Submit Feedback</button> <a class="btn btn-light" href="/beneficiary">← Back</a></div></form></div>'''
+    return page(body, "Beneficiary Feedback")
 
 
 @app.route("/assignments-staff-form")
